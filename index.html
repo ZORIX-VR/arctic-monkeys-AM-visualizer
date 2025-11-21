@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Stable AM-Style Visualizer</title>
+<style>
+body { margin:0; background:#000; display:flex; font-family:sans-serif; color:white; }
+#controls { width:300px; padding:20px; background:#111; display:flex; flex-direction:column; gap:10px; }
+#controls label { font-size:14px; }
+#controls input[type="range"] { width:100%; }
+#main { flex:1; display:flex; flex-direction:column; align-items:center; }
+canvas { margin-top:20px; background:#000; }
+button { padding:5px 10px; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="controls">
+  <label>Upload Audio
+    <input type="file" id="fileInput" accept="audio/*">
+  </label>
+  <button id="playPause">Play / Pause</button>
+  <label>Amplitude
+    <input type="range" id="amplitude" min="10" max="150" step="1" value="50">
+  </label>
+  <label id="stretchLabel">Wave Stretch
+    <input type="range" id="stretch" min="0.5" max="5" step="0.01" value="1">
+  </label>
+  <label id="transitionLabel">Transition Duration (s)
+    <input type="range" id="transitionDuration" min="0.1" max="10" step="0.1" value="2">
+  </label>
+  <label>Smoothness
+    <input type="range" id="smoothness" min="0" max="1" step="0.01" value="0.5">
+  </label>
+  <label>
+    <input type="checkbox" id="randomStretch"> Random Wave Stretch
+  </label>
+</div>
+
+<div id="main">
+  <canvas id="canvas" width="800" height="200"></canvas>
+</div>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const playPause = document.getElementById('playPause');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const amplitudeSlider = document.getElementById('amplitude');
+const stretchSlider = document.getElementById('stretch');
+const smoothSlider = document.getElementById('smoothness');
+const randomStretchCheckbox = document.getElementById('randomStretch');
+const transitionSlider = document.getElementById('transitionDuration');
+const transitionLabel = document.getElementById('transitionLabel');
+const stretchLabel = document.getElementById('stretchLabel');
+
+// SINGLE AudioContext + analyser
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const analyser = audioCtx.createAnalyser();
+analyser.fftSize = 2048;
+const bufferLength = analyser.frequencyBinCount;
+const dataArray = new Uint8Array(bufferLength);
+
+// SINGLE audio element + source
+const audioElement = new Audio();
+audioElement.crossOrigin = "anonymous";
+let sourceNode = audioCtx.createMediaElementSource(audioElement);
+sourceNode.connect(analyser);
+analyser.connect(audioCtx.destination);
+
+let isPlaying = false;
+let previousYs = new Array(canvas.width).fill(canvas.height/2);
+
+// Wave stretch state
+let currentStretch = parseFloat(stretchSlider.value);
+let targetStretch = currentStretch;
+let stretchStartTime = null;
+
+// Update UI
+function updateUI() {
+  transitionLabel.style.display = randomStretchCheckbox.checked ? "block" : "none";
+  stretchLabel.style.display = randomStretchCheckbox.checked ? "none" : "block";
+}
+randomStretchCheckbox.addEventListener('change', updateUI);
+updateUI();
+
+fileInput.addEventListener('change', (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  audioElement.src = URL.createObjectURL(file);
+  audioElement.load();
+  previousYs = new Array(canvas.width).fill(canvas.height/2);
+  isPlaying = false;
+  playPause.textContent = "Play / Pause";
+});
+
+playPause.addEventListener('click', ()=>{
+  if(!audioElement.src) return;
+  audioCtx.resume().then(()=>{
+    if(!isPlaying){
+      audioElement.play();
+      isPlaying = true;
+      playPause.textContent = "Pause";
+      requestAnimationFrame(draw);
+    } else {
+      audioElement.pause();
+      isPlaying = false;
+      playPause.textContent = "Play / Pause";
+    }
+  });
+});
+
+function lerp(a,b,t){ return a + (b - a) * t; }
+
+function draw(timestamp){
+  requestAnimationFrame(draw);
+
+  analyser.getByteFrequencyData(dataArray);
+
+  let sum = 0;
+  for(let i=0;i<bufferLength;i++) sum+=dataArray[i];
+  const avg = sum / bufferLength;
+
+  const amplitude = parseFloat(amplitudeSlider.value);
+  const smooth = parseFloat(smoothSlider.value);
+
+  if(randomStretchCheckbox.checked){
+    const duration = parseFloat(transitionSlider.value)*1000;
+    if(stretchStartTime===null) stretchStartTime = timestamp;
+    const elapsed = timestamp - stretchStartTime;
+
+    // Only pick a new target if we've finished previous transition
+    if(elapsed >= duration){
+      targetStretch = 0.5 + Math.random()*4.5;
+      stretchStartTime = timestamp;
+    }
+
+    const progress = Math.min((timestamp - stretchStartTime)/duration,1);
+    currentStretch = lerp(currentStretch,targetStretch,progress);
+    currentStretch = Math.max(0.5, Math.min(5, currentStretch));
+  } else {
+    currentStretch = parseFloat(stretchSlider.value);
+    stretchStartTime = null;
+    targetStretch = currentStretch;
+  }
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#fff';
+  ctx.beginPath();
+
+  for(let x=0;x<canvas.width;x++){
+    const t = (x / canvas.width) * Math.PI*2*currentStretch;
+    const yTarget = canvas.height/2 + Math.sin(t)*(avg/128*amplitude);
+    previousYs[x] += (yTarget - previousYs[x])*smooth;
+    if(x===0) ctx.moveTo(x,previousYs[x]);
+    else ctx.lineTo(x,previousYs[x]);
+  }
+  ctx.stroke();
+}
+</script>
+</body>
+</html>
